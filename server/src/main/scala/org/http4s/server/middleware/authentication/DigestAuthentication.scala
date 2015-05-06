@@ -7,7 +7,8 @@ import java.security.SecureRandom
 import java.math.BigInteger
 import java.util.{TimerTask, Timer, Date}
 import org.http4s.headers.Authorization
-import scala.collection.immutable.HashMap
+import scala.collection.mutable.HashMap
+
 import scalaz.concurrent.Task
 
 /**
@@ -47,22 +48,22 @@ class DigestAuthentication(realm: String, store: AuthenticationStore, nonceClean
   /** Side-effect of running the returned task: If req contains a valid
     * AuthorizationHeader, the corresponding nonce counter (nc) is increased.
     */
-  def getChallenge(req: Request) = {
+  protected def getChallenge(req: Request) = {
     def paramsToChallenge(params: Map[String, String]) = Some(Challenge("Digest", realm, params))
     checkAuth(req).flatMap(_ match {
-      case OK => Task.now(None)
+      case OK         => Task.now(None)
       case StaleNonce => getChallengeParams(true).map(paramsToChallenge)
-      case _ => getChallengeParams(false).map(paramsToChallenge)
+      case _          => getChallengeParams(false).map(paramsToChallenge)
     })
   }
 
-  case object StaleNonce extends AuthReply
+  private case object StaleNonce extends AuthReply
 
-  case object BadNC extends AuthReply
+  private case object BadNC extends AuthReply
 
-  case object WrongResponse extends AuthReply
+  private case object WrongResponse extends AuthReply
 
-  case object BadParameters extends AuthReply
+  private case object BadParameters extends AuthReply
 
   private def checkAuth(req: Request) = Task {
     req.headers.get(Authorization) match {
@@ -116,10 +117,9 @@ class DigestAuthentication(realm: String, store: AuthenticationStore, nonceClean
   }
 }
 
-class Nonce(val created: Date, var nc: Int, val data: String) {
-}
+private[authentication] class Nonce(val created: Date, var nc: Int, val data: String)
 
-object Nonce {
+private[authentication] object Nonce {
   val random = new SecureRandom()
 
   private def getRandomData(bits: Int) = new BigInteger(bits, random).toString(16)
@@ -129,7 +129,7 @@ object Nonce {
   }
 }
 
-object NonceKeeper {
+private[authentication] object NonceKeeper {
 
   sealed abstract class Reply
 
@@ -149,9 +149,9 @@ object NonceKeeper {
  *                     purposes anymore).
  * @param bits The number of random bits a nonce should consist of.
  */
-class NonceKeeper(staleTimeout: Long, bits: Int) {
+private[authentication] class NonceKeeper(staleTimeout: Long, bits: Int) {
   require(bits > 0, "Please supply a positive integer for bits.")
-  var nonces: Map[String, Nonce] = new HashMap[String, Nonce]
+  private val nonces = new HashMap[String, Nonce]
 
   private def isStale(past: Date, now: Date) = staleTimeout < now.getTime() - past.getTime()
 
@@ -160,8 +160,8 @@ class NonceKeeper(staleTimeout: Long, bits: Int) {
    */
   def removeStale() = {
     val d = new Date()
-    this.synchronized {
-      nonces = nonces.filter { case (_, n) => !isStale(n.created, d) }
+    nonces.synchronized {
+      nonces.retain{ case (_,n) => !isStale(n.created, d) }
     }
   }
 
@@ -171,11 +171,11 @@ class NonceKeeper(staleTimeout: Long, bits: Int) {
    */
   def newNonce() = {
     var n: Nonce = null
-    this.synchronized {
+    nonces.synchronized {
       do {
         n = Nonce(bits)
       } while (nonces.contains(n.data))
-      nonces = nonces + (n.data -> n)
+      nonces += (n.data -> n)
     }
     n.data
   }
@@ -189,7 +189,7 @@ class NonceKeeper(staleTimeout: Long, bits: Int) {
    * @return A reply indicating the status of (data, nc).
    */
   def receiveNonce(data: String, nc: Int) =
-    this.synchronized {
+    nonces.synchronized {
       nonces.get(data) match {
         case None => NonceKeeper.StaleReply
         case Some(n) => {

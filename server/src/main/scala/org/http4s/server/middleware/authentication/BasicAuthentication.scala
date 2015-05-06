@@ -13,7 +13,7 @@ import scalaz.concurrent.Task
  *              appropriate password.
  */
 class BasicAuthentication(realm: String, store: AuthenticationStore) extends Authentication {
-  def getChallenge(req: Request): Task[Option[Challenge]] = Task.now(checkAuth(req) match {
+  protected def getChallenge(req: Request): Task[Option[Challenge]] = Task.now(checkAuth(req) match {
     case OK => None
     case _ => Some(Challenge("Basic", realm, Nil.toMap))
   })

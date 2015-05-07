@@ -5,9 +5,10 @@ package authentication
 
 import java.security.SecureRandom
 import java.math.BigInteger
-import java.util.{TimerTask, Timer, Date}
+import java.util.Date
 import org.http4s.headers.Authorization
 import scala.collection.mutable.HashMap
+import scala.concurrent.duration._
 
 import scalaz.concurrent.Task
 
@@ -25,25 +26,8 @@ import scalaz.concurrent.Task
  *                       purposes anymore).
  * @param nonceBits The number of random bits a nonce should consist of.
  */
-class DigestAuthentication(realm: String, store: AuthenticationStore, nonceCleanupInterval: Long = 3600000, nonceStaleTime: Long = 3600000, nonceBits: Int = 160) extends Authentication {
-  private val nonceKeeper = new NonceKeeper(nonceStaleTime, nonceBits)
-  private val timer = new Timer(true)
-  scheduleStaleNonceRemoval()
-
-  private def scheduleStaleNonceRemoval(): Unit = {
-    val task: TimerTask = new TimerTask {
-      override def run(): Unit = {
-        nonceKeeper.removeStale()
-        scheduleStaleNonceRemoval()
-      }
-    }
-    timer.schedule(task, nonceCleanupInterval)
-  }
-
-  /**
-   * Cancels the nonce cleanup thread.
-   */
-  def shutdown() = timer.cancel()
+class DigestAuthentication(realm: String, store: AuthenticationStore, nonceCleanupInterval: Duration = 3600.seconds, nonceStaleTime: Duration = 3600.seconds, nonceBits: Int = 160) extends Authentication {
+  private val nonceKeeper = new NonceKeeper(nonceStaleTime.toMillis, nonceCleanupInterval.toMillis, nonceBits)
 
   /** Side-effect of running the returned task: If req contains a valid
     * AuthorizationHeader, the corresponding nonce counter (nc) is increased.
@@ -149,19 +133,19 @@ private[authentication] object NonceKeeper {
  *                     purposes anymore).
  * @param bits The number of random bits a nonce should consist of.
  */
-private[authentication] class NonceKeeper(staleTimeout: Long, bits: Int) {
+private[authentication] class NonceKeeper(staleTimeout: Long, nonceCleanupInterval: Long, bits: Int) {
   require(bits > 0, "Please supply a positive integer for bits.")
   private val nonces = new HashMap[String, Nonce]
-
-  private def isStale(past: Date, now: Date) = staleTimeout < now.getTime() - past.getTime()
+  private var lastCleanup = System.currentTimeMillis()
 
   /**
    * Removes nonces that are older than staleTimeout
    */
-  def removeStale() = {
-    val d = new Date()
-    nonces.synchronized {
-      nonces.retain{ case (_,n) => !isStale(n.created, d) }
+  private def checkStale() = {
+    val d = System.currentTimeMillis()
+    if (d - lastCleanup > nonceCleanupInterval) {
+      nonces.retain{ case (_,n) => staleTimeout > d - n.created.getTime() }
+      lastCleanup = d
     }
   }
 
@@ -172,6 +156,7 @@ private[authentication] class NonceKeeper(staleTimeout: Long, bits: Int) {
   def newNonce() = {
     var n: Nonce = null
     nonces.synchronized {
+      checkStale()
       do {
         n = Nonce(bits)
       } while (nonces.contains(n.data))
@@ -188,8 +173,9 @@ private[authentication] class NonceKeeper(staleTimeout: Long, bits: Int) {
    * @param nc The nonce counter.
    * @return A reply indicating the status of (data, nc).
    */
-  def receiveNonce(data: String, nc: Int) =
+  def receiveNonce(data: String, nc: Int): NonceKeeper.Reply =
     nonces.synchronized {
+      checkStale()
       nonces.get(data) match {
         case None => NonceKeeper.StaleReply
         case Some(n) => {

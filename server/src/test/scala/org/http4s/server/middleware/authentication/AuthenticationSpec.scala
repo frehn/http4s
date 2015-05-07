@@ -11,10 +11,13 @@ import org.http4s.parser.HttpParser
 import org.http4s.util.CaseInsensitiveString
 
 import org.specs2.mutable.Specification
+import org.specs2.time.NoTimeConversions
 
 import scalaz.concurrent.Task
 
-class AuthenticationSpec extends Specification {
+import scala.concurrent.duration._
+
+class AuthenticationSpec extends Specification with NoTimeConversions {
 
   val service = HttpService {
     case r if r.pathInfo == "/" => Response(Ok).withBody("foo")
@@ -88,8 +91,6 @@ class AuthenticationSpec extends Specification {
         case _ => false
       }) must_== true
 
-      da.shutdown()
-
       ok
     }
 
@@ -153,15 +154,13 @@ class AuthenticationSpec extends Specification {
       res3.isDefined must_== true
       res3.get.status must_== Unauthorized
 
-      da.shutdown()
-
       ok
     }
 
     "Respond to many concurrent requests while cleaning up nonces" in {
       val n = 100
       val sched = Executors.newFixedThreadPool(4)
-      val da = new DigestAuthentication(realm, authStore, 2, 2)
+      val da = new DigestAuthentication(realm, authStore, 2.millis, 2.millis)
       val digest = da(service)
       val tasks = (1 to n).map(i =>
         Task {
@@ -176,8 +175,6 @@ class AuthenticationSpec extends Specification {
           // be due to the low nonce stale timer.
         }(sched))
       Task.gatherUnordered(tasks).run
-
-      da.shutdown()
 
       ok
     }
@@ -197,8 +194,6 @@ class AuthenticationSpec extends Specification {
       val res = Task.gatherUnordered(tasks).run
       res.filter(s => s == Ok).size must_== 1
       res.filter(s => s == Unauthorized).size must_== n - 1
-
-      da.shutdown()
 
       ok
     }
@@ -230,8 +225,6 @@ class AuthenticationSpec extends Specification {
       })
 
       expected must_== result
-
-      da.shutdown()
 
       ok
     }

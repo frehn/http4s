@@ -28,8 +28,9 @@ class AuthenticationSpec extends Specification with NoTimeConversions {
   val username = "Test User"
   val password = "Test Password"
 
-  val authStore: PartialFunction[(String, String), String] = {
-    case (r, u) if r == realm && u == username => password
+  def authStore(r: String, u: String) = Task.now {
+    if (r == realm && u == username) Some(password)
+    else None
   }
 
   val basic = new BasicAuthentication(realm, authStore)(service)

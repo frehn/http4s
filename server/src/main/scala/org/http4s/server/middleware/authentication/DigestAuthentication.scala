@@ -49,15 +49,10 @@ class DigestAuthentication(realm: String, store: AuthenticationStore, nonceClean
 
   private case object BadParameters extends AuthReply
 
-  private def checkAuth(req: Request) = Task {
-    req.headers.get(Authorization) match {
-      case None => NoAuthorizationHeader
-      case Some(auth) => auth.credentials match {
-        case GenericCredentials(AuthScheme.Digest, params) =>
-          checkAuthParams(req, params)
-        case _ => NoCredentials
-      }
-    }
+  private def checkAuth(req: Request) = req.headers.get(Authorization) match {
+      case Some(Authorization(GenericCredentials(AuthScheme.Digest, params))) => checkAuthParams(req, params)
+      case Some(Authorization(_)) => Task.now(NoCredentials)
+      case None => Task.now(NoAuthorizationHeader)
   }
 
   private def getChallengeParams(staleNonce: Boolean) = Task {
@@ -69,34 +64,30 @@ class DigestAuthentication(realm: String, store: AuthenticationStore, nonceClean
       m
   }
 
-  private def checkAuthParams(req: Request, params: Map[String, String]): AuthReply = {
+  private def checkAuthParams(req: Request, params: Map[String, String]): Task[AuthReply] = {
     if (!(Set("realm", "nonce", "nc", "username", "cnonce", "qop") subsetOf params.keySet))
-      return BadParameters
+      return Task.now(BadParameters)
 
     val method = req.method.toString
     val uri = req.uri.toString
 
     if (params.get("realm") != Some(realm))
-      return BadParameters
+      return Task.now(BadParameters)
 
     val nonce = params("nonce")
     val nc = params("nc")
     nonceKeeper.receiveNonce(nonce, Integer.parseInt(nc, 16)) match {
-      case NonceKeeper.StaleReply => StaleNonce
-      case NonceKeeper.BadNCReply => BadNC
+      case NonceKeeper.StaleReply => Task.now(StaleNonce)
+      case NonceKeeper.BadNCReply => Task.now(BadNC)
       case NonceKeeper.OKReply =>
-        if (!store.isDefinedAt((realm, params("username"))))
-          UserUnknown
-        else
-          store((realm, params("username"))) match {
-            case password => {
-              val resp = DigestUtil.computeResponse(method, params("username"), realm, password, uri, nonce, nc, params("cnonce"), params("qop"))
-              if (resp == params("response"))
-                OK
-              else
-                WrongResponse
-            }
-          }
+        store(realm, params("username")).map {
+          case None => UserUnknown
+          case Some(password) =>
+            val resp = DigestUtil.computeResponse(method, params("username"), realm, password, uri, nonce, nc, params("cnonce"), params("qop"))
+
+            if (resp == params("response")) OK
+            else WrongResponse
+        }
     }
   }
 }
@@ -108,7 +99,7 @@ private[authentication] object Nonce {
 
   private def getRandomData(bits: Int) = new BigInteger(bits, random).toString(16)
 
-  def apply(bits: Int) = {
+  def gen(bits: Int) = {
     new Nonce(new Date(), 0, getRandomData(bits))
   }
 }
@@ -153,12 +144,12 @@ private[authentication] class NonceKeeper(staleTimeout: Long, nonceCleanupInterv
    * Get a fresh nonce in form of a {@link String}.
    * @return A fresh nonce.
    */
-  def newNonce() = {
+  def newNonce(): String = {
     var n: Nonce = null
     nonces.synchronized {
       checkStale()
       do {
-        n = Nonce(bits)
+        n = Nonce.gen(bits)
       } while (nonces.contains(n.data))
       nonces += (n.data -> n)
     }
